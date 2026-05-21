@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:text_analyzer/src/core/services/api_service.dart';
 
 class ReportScreen extends StatefulWidget {
   final List<Map<String, String>> history;
@@ -11,6 +12,7 @@ class ReportScreen extends StatefulWidget {
 
 class _ReportScreenState extends State<ReportScreen> {
   String _report = '';
+  bool _isDownloading = false;
 
   void _generateReport(String type) {
     if (type == 'Короткий') {
@@ -23,9 +25,62 @@ class _ReportScreenState extends State<ReportScreen> {
     setState(() {});
   }
 
-  void _downloadReport() {
+  Future<void> _downloadReport(String format) async {
+    if (_report.isEmpty) return;
+
+    setState(() {
+      _isDownloading = true;
+    });
+
+    final endpoint = format == 'pdf' ? '/report/pdf' : '/report/docx';
+    final filename = 'report_${DateTime.now().millisecondsSinceEpoch}.${format == 'pdf' ? 'pdf' : 'docx'}';
+
+    final message = await ApiService.downloadReport(
+      endpoint,
+      {
+        'text': _report,
+        'title': 'AI Analysis Report',
+      },
+      filename,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _isDownloading = false;
+    });
+
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Завантаження (імітація)")),
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _showDownloadOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) {
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf),
+              title: const Text('Завантажити PDF'),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadReport('pdf');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.article),
+              title: const Text('Завантажити DOCX'),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadReport('docx');
+              },
+            ),
+          ],
+        );
+      },
     );
   }
 
@@ -67,9 +122,11 @@ class _ReportScreenState extends State<ReportScreen> {
             ),
 
             ElevatedButton.icon(
-              onPressed: _report.isEmpty ? null : _downloadReport,
+              onPressed: _report.isEmpty || _isDownloading ? null : _showDownloadOptions,
               icon: const Icon(Icons.download),
-              label: const Text("Завантажити"),
+              label: Text(
+                _isDownloading ? 'Завантаження...' : 'Завантажити',
+              ),
             ),
           ],
         ),

@@ -1,8 +1,6 @@
-// ignore_for_file: deprecated_member_use
-// ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
 
-void downloadBytes(List<int> bytes, String filename) {
+Future<String> downloadBytes(List<int> bytes, String filename) async {
   final blob = html.Blob([bytes]);
   final url = html.Url.createObjectUrlFromBlob(blob);
 
@@ -11,4 +9,5 @@ void downloadBytes(List<int> bytes, String filename) {
     ..click();
 
   html.Url.revokeObjectUrl(url);
+  return filename;
 }

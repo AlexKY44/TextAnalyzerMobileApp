@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:text_analyzer/src/core/services/download_service.dart';
 
 class ApiService {
   static String get baseUrl {
@@ -12,7 +13,6 @@ class ApiService {
     }
   }
 
-  // 🔥 ОСНОВНИЙ МЕТОД (AI)
   static Future<dynamic> processText(
       String endpoint, Map<String, dynamic> body) async {
     try {
@@ -30,12 +30,17 @@ class ApiService {
         final data = jsonDecode(decoded);
 
         if (endpoint == '/check') {
-          final mistakes = data['result']['mistakes'] as List;
+          final resultData = data['result'] is Map
+              ? Map<String, dynamic>.from(data['result'])
+              : null;
+          final mistakes =
+              (resultData?['mistakes'] as List<dynamic>?) ?? <dynamic>[];
 
           return {
-            "text": data['result']['corrected'] ?? '',
-            "style": data['result']['style_improved'] ?? '',
-            "mistakes": mistakes.length,
+            "text": resultData?['corrected'] ?? '',
+            "style": resultData?['style_improved'] ?? '',
+            "mistakes": mistakes,
+            "mistakesCount": mistakes.length,
             "chars": data['char_count'],
             "words": data['word_count'],
           };
@@ -83,6 +88,37 @@ class ApiService {
       }
     } catch (e) {
       return 'Помилка зʼєднання при upload';
+    }
+  }
+
+  static Future<String> downloadReport(
+    String endpoint,
+    Map<String, dynamic> body,
+    String filename,
+  ) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl$endpoint'),
+            headers: {"Content-Type": "application/json; charset=UTF-8"},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 30));
+
+      if (response.statusCode == 200) {
+        final path = await downloadBytes(response.bodyBytes, filename);
+        return 'Звіт збережено: $path';
+      }
+
+      final decoded = utf8.decode(response.bodyBytes);
+      try {
+        final errorData = jsonDecode(decoded);
+        return 'Помилка: ${errorData['detail'] ?? response.statusCode}';
+      } catch (_) {
+        return 'Помилка сервера: ${response.statusCode}';
+      }
+    } catch (e) {
+      return 'Немає з\'єднання з сервером';
     }
   }
 }

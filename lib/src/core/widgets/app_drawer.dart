@@ -24,14 +24,12 @@ class AppDrawer extends StatelessWidget {
             ),
           ),
 
-          // 🔹 HOME
           ListTile(
             leading: const Icon(Icons.home),
             title: const Text('Головна'),
             onTap: () => Navigator.pop(context),
           ),
 
-          // 🔹 FILE
           ListTile(
             leading: const Icon(Icons.file_open),
             title: const Text('Файли'),

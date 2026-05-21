@@ -9,4 +9,10 @@ const Map<String, String> actionsMap = {
 const Map<String, String> languageMap = {
   'Англійська': 'English',
   'Українська': 'Ukrainian',
+  'Французька': 'French',
+  'Польська': 'Polish',
+  'Китайська': 'Chinese',
+  'Японська': 'Japanese',
+  'Німецька': 'German',
+  'Іспанська': 'Spanish',
 };

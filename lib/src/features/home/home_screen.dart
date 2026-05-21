@@ -22,7 +22,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String _outputText = '';
   bool _isLoading = false;
 
-  bool _isRegistered = false; // 🔥 користувач
+  bool _isRegistered = false;
   String _userName = '';
 
   final List<Map<String, String>> _history = [];
@@ -58,7 +58,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // 🔥 ЛІМІТ
   bool _checkLimit() {
     int limit = _isRegistered ? 1000 : 300;
 
@@ -90,18 +89,114 @@ class _HomeScreenState extends State<HomeScreen> {
       body["target_language"] = _selectedLanguage;
     }
 
-    final result = await ApiService.processText(endpoint, body);
+    try {
+      final result = await ApiService.processText(endpoint, body);
 
-    _history.insert(0, {
-      "action": _selectedAction,
-      "text": _inputController.text,
-    });
+      _history.insert(0, {
+        "action": _selectedAction,
+        "text": _inputController.text,
+      });
 
-    setState(() {
-      _outputText =
-          endpoint == '/check' ? result['style'] ?? '' : result;
-      _isLoading = false;
-    });
+      if (endpoint == '/check' && result is Map<String, dynamic>) {
+        final mistakes = result['mistakes'] as List<dynamic>? ?? [];
+        final styleOutput = result['style'] ?? '';
+        final correctedText = result['text'] ?? '';
+        final originalText = _inputController.text;
+
+        setState(() {
+          _outputText = correctedText.isNotEmpty ? correctedText : styleOutput;
+          _isLoading = false;
+        });
+
+        _showCheckResultDialog(mistakes, originalText, correctedText);
+      } else {
+        setState(() {
+          _outputText = result.toString();
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Помилка обробки: $e')),
+      );
+    }
+  }
+
+  void _showCheckResultDialog(List<dynamic> mistakes, String originalText, String correctedText) {
+    showDialog(
+      context: context,
+      builder: (_) {
+        final changed = correctedText.isNotEmpty && correctedText != originalText;
+        final noChanges = mistakes.isNotEmpty && !changed;
+
+        return AlertDialog(
+          title: Text(mistakes.isEmpty
+              ? 'Перевірка пройшла успішно'
+              : 'Знайдено ${mistakes.length} помилок'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (mistakes.isEmpty) ...[
+                  const Text('У вашому тексті немає помилок'),
+                ] else ...[
+                  if (noChanges)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text('Помилки знайдено, але текст не змінився.'),
+                    ),
+                  const Text('Список помилок:'),
+                  const SizedBox(height: 8),
+                  ...mistakes.map((mistake) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Text(_formatMistake(mistake)),
+                    );
+                  }),
+                ],
+                const SizedBox(height: 16),
+                const Text('Оригінальний текст:'),
+                const SizedBox(height: 8),
+                Text(originalText),
+                if (changed) ...[
+                  const SizedBox(height: 16),
+                  const Text('Виправлений текст:'),
+                  const SizedBox(height: 8),
+                  Text(correctedText),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Закрити'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _formatMistake(dynamic mistake) {
+    if (mistake == null) return '';
+    if (mistake is String) return mistake;
+    if (mistake is Map) {
+      if (mistake.containsKey('message')) {
+        return mistake['message'].toString();
+      }
+      if (mistake.containsKey('error')) {
+        return mistake['error'].toString();
+      }
+      return mistake.entries
+          .map((entry) => '${entry.key}: ${entry.value}')
+          .join('; ');
+    }
+    return mistake.toString();
   }
 
   void _reuseText() {
@@ -126,7 +221,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // 🔥 КОПІЮВАННЯ
   void _copy(String text) {
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -134,7 +228,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // 🔥 МІКРОФОН (заглушка)
   void _voiceInput() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text("Тут буде голосовий ввід 🎤")),
@@ -239,7 +332,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 10),
 
-            // 🔥 INPUT
             Expanded(
               child: TextPanel(
                 controller: _inputController,
@@ -253,7 +345,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
             const SizedBox(height: 10),
 
-            // 🔥 OUTPUT
             Expanded(
               child: TextPanel(
                 text: _outputText,

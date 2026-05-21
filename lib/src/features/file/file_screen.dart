@@ -1,5 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:provider/provider.dart';
@@ -17,9 +20,11 @@ class FileScreen extends StatefulWidget {
 
 class _FileScreenState extends State<FileScreen> {
   final TextEditingController _controller = TextEditingController();
+  final TextEditingController _reportTitleController = TextEditingController();
 
   String _fileName = '';
   bool _isLoading = false;
+  bool _isDownloadingReport = false;
 
   final List<Map<String, String>> _history = [];
 
@@ -28,6 +33,28 @@ class _FileScreenState extends State<FileScreen> {
 
   late String _selectedAction;
   late String _selectedLanguage;
+
+  int get _charCount => _controller.text.length;
+  int get _wordCount {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return 0;
+    return text.split(RegExp(r'\s+')).length;
+  }
+
+  String _suggestReportTitle([String? text]) {
+    final content = (text ?? _controller.text).trim();
+    if (content.isEmpty) return 'AI Analysis Report';
+
+    final firstSentence = content.split(RegExp(r'[.!?]\s+')).first;
+    final words = firstSentence.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).toList();
+    if (words.length <= 5) return words.map((w) => _capitalizeWord(w)).join(' ');
+    return '${words.take(5).map((w) => _capitalizeWord(w)).join(' ')}...';
+  }
+
+  String _capitalizeWord(String word) {
+    if (word.isEmpty) return word;
+    return word[0].toUpperCase() + word.substring(1);
+  }
 
   @override
   void initState() {
@@ -64,6 +91,10 @@ class _FileScreenState extends State<FileScreen> {
         _controller.text = result;
       }
 
+      if (_reportTitleController.text.trim().isEmpty) {
+        _reportTitleController.text = _suggestReportTitle();
+      }
+
       _history.insert(0, {
         "name": _fileName,
         "content": _controller.text,
@@ -93,13 +124,183 @@ class _FileScreenState extends State<FileScreen> {
       body["target_language"] = _selectedLanguage;
     }
 
-    final result = await ApiService.processText(endpoint, body);
+    final currentAutoTitle = _suggestReportTitle();
+    final titleWasAuto = _reportTitleController.text.trim().isEmpty ||
+        _reportTitleController.text.trim() == currentAutoTitle;
+
+    try {
+      final result = await ApiService.processText(endpoint, body);
+
+      if (endpoint == '/check' && result is Map<String, dynamic>) {
+        final mistakes = result['mistakes'] as List<dynamic>? ?? [];
+        final styleOutput = result['style'] ?? '';
+        final correctedText = result['text'] ?? '';
+        final originalText = _controller.text;
+
+        setState(() {
+          _controller.text = correctedText.isNotEmpty ? correctedText : styleOutput;
+          _isLoading = false;
+        });
+
+        _showCheckResultDialog(mistakes, originalText, correctedText);
+      } else {
+        final processedText = result.toString();
+        setState(() {
+          _controller.text = processedText;
+          if (endpoint == '/translate' && titleWasAuto) {
+            _reportTitleController.text = _suggestReportTitle(processedText);
+          }
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Помилка обробки: $e')),
+      );
+    }
+  }
+
+  void _showCheckResultDialog(List<dynamic> mistakes, String originalText, String correctedText) {
+    showDialog(
+      context: context,
+      builder: (_) {
+        final changed = correctedText.isNotEmpty && correctedText != originalText;
+        final noChanges = mistakes.isNotEmpty && !changed;
+
+        return AlertDialog(
+          title: Text(mistakes.isEmpty
+              ? 'Перевірка пройшла успішно'
+              : 'Знайдено ${mistakes.length} помилок'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (mistakes.isEmpty) ...[
+                  const Text('У вашому тексті немає помилок'),
+                ] else ...[
+                  if (noChanges)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text('Помилки знайдено, але текст не змінився.'),
+                    ),
+                  const Text('Список помилок:'),
+                  const SizedBox(height: 8),
+                  ...mistakes.map((mistake) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Text(_formatMistake(mistake)),
+                    );
+                  }),
+                ],
+                const SizedBox(height: 16),
+                const Text('Оригінальний текст:'),
+                const SizedBox(height: 8),
+                Text(originalText),
+                if (changed) ...[
+                  const SizedBox(height: 16),
+                  const Text('Виправлений текст:'),
+                  const SizedBox(height: 8),
+                  Text(correctedText),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Закрити'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _generateReport(String format) async {
+    if (_controller.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Текст для звіту порожній')),
+      );
+      return;
+    }
 
     setState(() {
-      _controller.text =
-          endpoint == '/check' ? result['style'] ?? '' : result;
-      _isLoading = false;
+      _isDownloadingReport = true;
     });
+
+    final endpoint = format == 'pdf' ? '/report/pdf' : '/report/docx';
+    final filename = 'report_${DateTime.now().millisecondsSinceEpoch}.${format == 'pdf' ? 'pdf' : 'docx'}';
+    final title = _reportTitleController.text.trim().isEmpty
+        ? _suggestReportTitle()
+        : _reportTitleController.text.trim();
+
+    final message = await ApiService.downloadReport(
+      endpoint,
+      {
+        'text': _controller.text,
+        'title': title,
+      },
+      filename,
+    );
+
+    if (!mounted) return;
+    setState(() {
+      _isDownloadingReport = false;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _showReportOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) {
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf),
+              title: const Text('Завантажити звіт PDF'),
+              onTap: () {
+                Navigator.pop(context);
+                _generateReport('pdf');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.article),
+              title: const Text('Завантажити звіт DOCX'),
+              onTap: () {
+                Navigator.pop(context);
+                _generateReport('docx');
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _formatMistake(dynamic mistake) {
+    if (mistake == null) return '';
+    if (mistake is String) return mistake;
+    if (mistake is Map) {
+      if (mistake.containsKey('message')) {
+        return mistake['message'].toString();
+      }
+      if (mistake.containsKey('error')) {
+        return mistake['error'].toString();
+      }
+      return mistake.entries
+          .map((entry) => '${entry.key}: ${entry.value}')
+          .join('; ');
+    }
+    return mistake.toString();
   }
 
 
@@ -109,17 +310,79 @@ class _FileScreenState extends State<FileScreen> {
   }
 
 
+  String _sanitizeFileName(String name) {
+    final sanitized = name.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_').trim();
+    return sanitized.isEmpty ? 'document' : sanitized;
+  }
+
+  Future<pw.Font> _loadPdfFont() async {
+    if (kIsWeb) {
+      return pw.Font.helvetica();
+    }
+
+    final fontCandidates = <String>[];
+    if (Platform.isWindows) {
+      fontCandidates.addAll([
+        r'C:\Windows\Fonts\arial.ttf',
+        r'C:\Windows\Fonts\tahoma.ttf',
+        r'C:\Windows\Fonts\calibri.ttf',
+      ]);
+    } else if (Platform.isLinux) {
+      fontCandidates.add('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf');
+    } else if (Platform.isMacOS) {
+      fontCandidates.addAll([
+        '/Library/Fonts/Arial.ttf',
+        '/Library/Fonts/Helvetica.ttf',
+      ]);
+    }
+
+    for (final path in fontCandidates) {
+      final file = File(path);
+      if (await file.exists()) {
+        final bytes = await file.readAsBytes();
+        return pw.Font.ttf(bytes.buffer.asByteData());
+      }
+    }
+
+    return pw.Font.helvetica();
+  }
+
   Future<void> _downloadPDF() async {
+    final title = _reportTitleController.text.trim().isEmpty
+        ? _suggestReportTitle()
+        : _reportTitleController.text.trim();
+
+    final font = await _loadPdfFont();
     final pdf = pw.Document();
 
     pdf.addPage(
       pw.Page(
-        build: (context) => pw.Text(_controller.text),
+        build: (context) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            pw.Text(
+              title,
+              style: pw.TextStyle(
+                font: font,
+                fontSize: 24,
+                fontWeight: pw.FontWeight.bold,
+              ),
+            ),
+            pw.SizedBox(height: 12),
+            pw.Text(
+              _controller.text,
+              style: pw.TextStyle(
+                font: font,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
       ),
     );
 
     final bytes = await pdf.save();
-    downloadBytes(bytes, 'result.pdf');
+    downloadBytes(bytes, '${_sanitizeFileName(title)}.pdf');
   }
 
   void _showDownloadDialog() {
@@ -180,8 +443,14 @@ class _FileScreenState extends State<FileScreen> {
               leading: const Icon(Icons.home),
               title: const Text("Головна"),
               onTap: () {
-                Navigator.pop(context);
+                Navigator.of(context).popUntil((route) => route.isFirst);
               },
+            ),
+            ListTile(
+              leading: const Icon(Icons.file_open),
+              title: const Text("Файли"),
+              selected: true,
+              onTap: () => Navigator.pop(context),
             ),
 
             const Divider(),
@@ -267,6 +536,44 @@ class _FileScreenState extends State<FileScreen> {
               ),
             ),
 
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isDark ? Colors.grey[900] : Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: isDark
+                    ? null
+                    : Border.all(color: Colors.grey.shade300),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Файл: ${_fileName.isEmpty ? 'Без назви' : _fileName}'),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 6,
+                    children: [
+                      Text('Символів: $_charCount'),
+                      Text('Слів: $_wordCount'),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _reportTitleController,
+                    decoration: InputDecoration(
+                      labelText: 'Заголовок документу',
+                      hintText: _suggestReportTitle(),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
             Row(
               children: [
                 Expanded(
@@ -282,6 +589,21 @@ class _FileScreenState extends State<FileScreen> {
                         ? null
                         : _showDownloadDialog,
                     child: const Text("Завантажити"),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _controller.text.isEmpty || _isDownloadingReport
+                        ? null
+                        : _showReportOptions,
+                    child: Text(_isDownloadingReport
+                        ? 'Генеруємо звіт...'
+                        : 'Завантажити звіт'),
                   ),
                 ),
               ],
